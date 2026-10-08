@@ -1,0 +1,32 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Check the app imports
+        run: python -c "import toolkit.ui, toolkit.tweaks, toolkit.actions"
+
+      - name: Build exe
+        run: >
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin
+          --name FPSToolkit --collect-data customtkinter fps_toolkit.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FPSToolkit
+          path: dist/FPSToolkit.exe

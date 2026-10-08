@@ -14,6 +14,18 @@ says exactly what it does, how much it really helps, and can be undone.
 
 Or from a terminal: `pip install -r requirements.txt` then `python fps_toolkit.py`.
 
+## Get the .exe
+
+- **Download:** every push is built on GitHub's Windows machines. Open the repo's
+  **Actions** tab → latest **Build Windows exe** run → download the **FPSToolkit** artifact (a zip
+  containing `FPSToolkit.exe`).
+- **Build it yourself:** double-click **`build.bat`**. The exe ends up in `dist\FPSToolkit.exe`.
+
+The exe is a single file with Python built in, so it runs without installing anything. It asks for
+administrator rights when it starts. Some antivirus programs wrongly flag new PyInstaller exes
+because they're unsigned. If that happens, building it yourself with `build.bat` gives you an exe
+made from the code you can read here.
+
 ## What's inside
 
 | Page | What it does |
