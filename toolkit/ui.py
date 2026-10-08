@@ -15,7 +15,7 @@ import psutil
 
 from . import actions, sysinfo
 from .actions import Action
-from .tweaks import TWEAKS, Tweak
+from .tweaks import MODE_TWEAK_IDS, MODES, TWEAKS, Mode, Tweak
 from .winutils import IS_WINDOWS, WindowsOnlyError, write_log_file
 
 C = {
@@ -144,6 +144,47 @@ class ItemCard(Card):
             self.status.configure(text="…", text_color=C["muted"])
 
 
+class ModeCard(Card):
+    """One of the Low / Balanced / Extreme presets."""
+
+    def __init__(self, master, app: "App", mode: Mode) -> None:
+        super().__init__(master)
+        self.mode = mode
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(4, weight=1)
+
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
+        head.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(head, text=mode.name, font=font(20, "bold"), anchor="w",
+                     text_color=mode.color if mode.id != "low" else C["good"]).grid(
+            row=0, column=0, sticky="w")
+        self.active_badge = badge(head, "ACTIVE", mode.color)
+        self.active_badge.grid(row=0, column=1)
+        self.active_badge.grid_remove()
+
+        WrapLabel(self, text=mode.tagline, font=font(12), text_color=C["text"]).grid(
+            row=1, column=0, sticky="ew", padx=16)
+        includes = "\n".join(f"✓  {t.title}" for t in mode.tweaks)
+        ctk.CTkLabel(self, text=includes, font=font(12), text_color=C["muted"], anchor="w",
+                     justify="left").grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 0))
+        WrapLabel(self, text=f"Trade-off: {mode.cost}", font=font(11),
+                  text_color=C["muted"]).grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
+        ctk.CTkButton(self, text=f"Use {mode.name} mode", height=36, corner_radius=8,
+                      font=font(13, "bold"), fg_color=mode.color,
+                      hover_color=C["button2_hover"],
+                      command=lambda: app.apply_mode(mode)).grid(
+            row=5, column=0, sticky="sew", padx=16, pady=(12, 14))
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.active_badge.grid()
+            self.configure(border_color=self.mode.color, border_width=2)
+        else:
+            self.active_badge.grid_remove()
+            self.configure(border_color=C["card_border"], border_width=1)
+
+
 class UsageGraph(Card):
     def __init__(self, master, name: str) -> None:
         super().__init__(master)
@@ -191,6 +232,7 @@ class App(ctk.CTk):
         self._events: queue.Queue = queue.Queue()
         self._job_running = False
         self.tweak_cards: list[ItemCard] = []
+        self.mode_cards: list[ModeCard] = []
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         self.pages: dict[str, ctk.CTkScrollableFrame] = {}
 
@@ -326,6 +368,9 @@ class App(ctk.CTk):
                                       tweaks["game_mode"], tweaks["hags"]])
         row = self._section(page, row, "Input & display")
         row = self._cards(page, row, [tweaks["mouse_accel"], *actions.WINDOWS_ACTIONS])
+        row = self._section(page, row, "Extra (used by Balanced and Extreme modes)")
+        row = self._cards(page, row, [tweaks["game_bar_overlay"], tweaks["background_apps"],
+                                      tweaks["fortnite_priority"]])
 
         page = self._new_page("network")
         row = self._header(page, "Network", "Software can't shorten the distance to Fortnite's "
@@ -392,16 +437,16 @@ class App(ctk.CTk):
         quick.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(quick, text="Quick start", font=font(15, "bold"), anchor="w").grid(
             row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
-        WrapLabel(quick, text="1.  Create a restore point\n2.  Apply the recommended tweaks\n"
+        WrapLabel(quick, text="1.  Create a restore point\n2.  Pick a mode below\n"
                               "3.  Set up Fortnite with the guide", font=font(12),
                   text_color=C["muted"]).grid(row=1, column=0, sticky="ew", padx=16)
         ctk.CTkButton(quick, text="Create restore point", height=34, corner_radius=8,
-                      fg_color=C["button2"], hover_color=C["button2_hover"], font=font(12),
+                      fg_color=C["accent"], hover_color=C["accent_hover"], font=font(12, "bold"),
                       command=lambda: self.run_action(actions.RESTORE_POINT)).grid(
             row=2, column=0, sticky="ew", padx=16, pady=(12, 4))
-        ctk.CTkButton(quick, text="Apply recommended tweaks", height=34, corner_radius=8,
-                      fg_color=C["accent"], hover_color=C["accent_hover"], font=font(12, "bold"),
-                      command=self._apply_recommended).grid(
+        ctk.CTkButton(quick, text="Open Fortnite guide", height=34, corner_radius=8,
+                      fg_color=C["button2"], hover_color=C["button2_hover"], font=font(12),
+                      command=lambda: self.show("guide")).grid(
             row=3, column=0, sticky="ew", padx=16, pady=(4, 14))
 
         conn = Card(boxes)
@@ -418,6 +463,16 @@ class App(ctk.CTk):
                       command=lambda: self.run_action(actions.CONNECTION_TEST,
                                                       on_result=self._show_conn)).grid(
             row=3, column=0, sticky="sew", padx=16, pady=(12, 14))
+
+        row = self._section(page, row, "Modes")
+        modes = ctk.CTkFrame(page, fg_color="transparent")
+        modes.grid(row=row, column=0, columnspan=2, sticky="ew")
+        modes.grid_columnconfigure(tuple(range(len(MODES))), weight=1, uniform="mode")
+        for i, mode in enumerate(MODES):
+            card = ModeCard(modes, self, mode)
+            card.grid(row=0, column=i, sticky="nsew", padx=6, pady=6)
+            self.mode_cards.append(card)
+        row += 1
 
         row = self._section(page, row, "PC stats")
         self.cpu_graph = UsageGraph(page, "CPU usage")
@@ -553,19 +608,36 @@ class App(ctk.CTk):
         self.log(f"Run: {action.title}")
         self.run_job(action.title, action.func, on_result)
 
-    def _apply_recommended(self) -> None:
-        chosen = [t for t in TWEAKS if t.recommended]
-        names = "\n".join(f"•  {t.title}" for t in chosen)
-        if not messagebox.askyesno("FPS Toolkit", f"This will apply:\n\n{names}\n\n"
-                                   "Creating a restore point first is recommended. Continue?"):
+    def apply_mode(self, mode: Mode) -> None:
+        turn_on = mode.tweaks
+        turn_off = [t for t in TWEAKS if t.id in MODE_TWEAK_IDS and t.id not in mode.tweak_ids]
+        text = f"{mode.name} mode will turn on:\n\n" + "\n".join(f"•  {t.title}" for t in turn_on)
+        if turn_off:
+            text += "\n\nand undo these if they're on:\n\n" + "\n".join(
+                f"•  {t.title}" for t in turn_off)
+        text += "\n\nCreate a restore point first if you haven't yet. Continue?"
+        if not messagebox.askyesno(f"{mode.name} mode", text):
             return
 
         def job(log):
-            for t in chosen:
+            needs_restart = False
+            for t in turn_on:
+                if t.status() is True:
+                    log(f"Already on: {t.title}")
+                    continue
                 log(f"Apply: {t.title}")
                 t.apply(log)
+                needs_restart |= t.restart
+            for t in turn_off:
+                if t.status():
+                    log(f"Revert: {t.title}")
+                    t.revert(log)
+                    needs_restart |= t.restart
+            if needs_restart:
+                log("    restart your PC to finish switching modes")
 
-        self.run_job("Recommended tweaks", job)
+        self.log(f"Switching to {mode.name} mode")
+        self.run_job(f"{mode.name} mode", job)
 
     def _revert_all(self, log) -> None:
         for t in TWEAKS:
@@ -578,12 +650,17 @@ class App(ctk.CTk):
             return
 
         def worker() -> None:
-            for card in self.tweak_cards:
+            statuses = {}
+            for t in TWEAKS:
                 try:
-                    value = card.item.status()
+                    statuses[t.id] = t.status()
                 except Exception:  # noqa: BLE001
-                    value = None
-                self.call_ui(card.set_status, value)
+                    statuses[t.id] = None
+            for card in self.tweak_cards:
+                self.call_ui(card.set_status, statuses[card.item.id])
+            on = {tid for tid in MODE_TWEAK_IDS if statuses.get(tid)}
+            for card in self.mode_cards:
+                self.call_ui(card.set_active, on == set(card.mode.tweak_ids))
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -28,10 +28,24 @@ made from the code you can read here.
 
 ## What's inside
 
+## Modes
+
+Pick one on the Home page. Switching modes also undoes the tweaks the new mode doesn't use, so
+you can move between them freely.
+
+| Mode | Turns on | Trade-off |
+| --- | --- | --- |
+| **Low** | Game Mode, background game recording off | None |
+| **Balanced** | Low + Ultimate Performance power plan + Xbox Game Bar overlay off | More power at idle; laptops run warmer |
+| **Extreme** | Balanced + GPU hardware scheduling + Store apps blocked in the background + High CPU priority for Fortnite | Store app notifications stop; Discord audio may crackle under full CPU load; needs a restart |
+
+Extreme gives steadier frames and a few % more FPS. It's not a miracle, and it still leaves out
+anything unsafe (see below).
+
 | Page | What it does |
 | --- | --- |
-| Home | Your PC specs, live CPU/RAM graphs, one-click recommended tweaks, connection test |
-| Windows | Ultimate Performance power plan, Game Mode, turn off background game recording, mouse acceleration off, GPU hardware scheduling, refresh-rate check |
+| Home | Your PC specs, the three modes, live CPU/RAM graphs, connection test |
+| Windows | Ultimate Performance power plan, Game Mode, turn off background game recording, mouse acceleration off, GPU hardware scheduling, Game Bar overlay off, Store apps in the background, Fortnite CPU priority, refresh-rate check |
 | Network | Ping / jitter / packet-loss test, Wi-Fi vs Ethernet check, DNS flush, network reset |
 | Cleanup | Temp files, Recycle Bin, startup apps, uninstall apps, Disk Cleanup, DISM + SFC repair |
 | GPU | Shader cache clear, per-game GPU preference, official driver links, DDU |

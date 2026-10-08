@@ -35,13 +35,12 @@ class Tweak:
     """Base class. `impact` is an honest label shown on the card."""
 
     def __init__(self, id: str, title: str, description: str, impact: str, *,
-                 restart: bool = False, recommended: bool = False) -> None:
+                 restart: bool = False) -> None:
         self.id = id
         self.title = title
         self.description = description
         self.impact = impact
         self.restart = restart
-        self.recommended = recommended
 
     def status(self) -> bool | None:
         return None
@@ -210,13 +209,13 @@ TWEAKS: list[Tweak] = [
         "Stops the CPU from dropping into deep power-saving states between frames, "
         "which smooths out frame times. Revert puts your old plan back. "
         "On a laptop this uses more battery and runs warmer.",
-        "Real gain", recommended=True,
+        "Real gain",
     ),
     RegistryTweak(
         "game_mode", "Turn on Game Mode",
         "Windows gives the game priority and holds back Windows Update installs and "
         "notifications while you play. On by default on most PCs; this makes sure.",
-        "Small gain", recommended=True,
+        "Small gain",
         settings=[
             RegSetting("HKCU", r"Software\Microsoft\GameBar", "AutoGameModeEnabled", 1),
             RegSetting("HKCU", r"Software\Microsoft\GameBar", "AllowAutoGameMode", 1),
@@ -226,7 +225,7 @@ TWEAKS: list[Tweak] = [
         "game_dvr", "Turn off background game recording",
         "Stops Xbox Game Bar from constantly recording the last few minutes of gameplay "
         "in the background, which costs GPU encoder time and disk writes.",
-        "Real gain", recommended=True,
+        "Real gain",
         settings=[
             RegSetting("HKCU", r"System\GameConfigStore", "GameDVR_Enabled", 0, default=1),
             RegSetting("HKCU", r"Software\Microsoft\Windows\CurrentVersion\GameDVR",
@@ -248,13 +247,84 @@ TWEAKS: list[Tweak] = [
     ),
     RegistryTweak(
         "hags", "GPU hardware scheduling",
-        "(Hardware-accelerated GPU scheduling.) Lets the graphics card manage its own memory queue. Needed for DLSS Frame "
-        "Generation; for everything else the difference is small and can go either "
-        "way, so test it in your own game.",
+        "Hardware-accelerated GPU scheduling lets the graphics card manage its own memory "
+        "queue. Needed for DLSS Frame Generation; otherwise the difference is small and "
+        "can go either way, so test it in your own game.",
         "Small gain", restart=True,
         settings=[
             RegSetting("HKLM", r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
                        "HwSchMode", 2),
         ],
     ),
+    RegistryTweak(
+        "game_bar_overlay", "Turn off Xbox Game Bar overlay",
+        "Stops the Win+G overlay from loading and popping up over your game. "
+        "You can still record clips with NVIDIA ShadowPlay or OBS.",
+        "Small gain",
+        settings=[
+            RegSetting("HKCU", r"Software\Microsoft\GameBar", "UseNexusForGameBarEnabled", 0),
+        ],
+    ),
+    RegistryTweak(
+        "background_apps", "Block Store apps in the background",
+        "Microsoft Store apps (Mail, Phone Link, Xbox app, widgets…) can't run while closed. "
+        "Frees a bit of CPU and RAM. Their notifications and live updates stop until you "
+        "revert this.",
+        "Small gain",
+        settings=[
+            RegSetting("HKLM", r"SOFTWARE\Policies\Microsoft\Windows\AppPrivacy",
+                       "LetAppsRunInBackground", 2),
+        ],
+    ),
+    RegistryTweak(
+        "fortnite_priority", "High CPU priority for Fortnite",
+        "Windows starts Fortnite with High priority so it wins over background programs "
+        "when the CPU is busy. Only changes how Windows launches it, not the game files. "
+        "Discord or stream audio may crackle if your CPU is maxed.",
+        "Small gain",
+        settings=[
+            RegSetting("HKLM", r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File "
+                               r"Execution Options\FortniteClient-Win64-Shipping.exe\PerfOptions",
+                       "CpuPriorityClass", 3),
+        ],
+    ),
 ]
+
+
+# --------------------------------------------------------------------------- modes
+
+@dataclass
+class Mode:
+    id: str
+    name: str
+    tagline: str
+    cost: str
+    color: str
+    tweak_ids: list[str]
+
+    @property
+    def tweaks(self) -> list[Tweak]:
+        return [t for t in TWEAKS if t.id in self.tweak_ids]
+
+
+MODES: list[Mode] = [
+    Mode("low", "Low",
+         "The safe basics. Good for laptops and for anyone who wants nothing aggressive.",
+         "Costs nothing: no extra heat, battery or lost features.",
+         "#15803d", ["game_mode", "game_dvr"]),
+    Mode("balanced", "Balanced",
+         "Low, plus a full-power CPU plan and no Game Bar overlay. The best choice for most "
+         "gaming PCs.",
+         "Uses more power at idle, and laptops run warmer.",
+         "#2563eb", ["game_mode", "game_dvr", "power_plan", "game_bar_overlay"]),
+    Mode("extreme", "Extreme",
+         "Everything that still helps: Balanced, plus GPU scheduling, Store apps blocked in "
+         "the background and High priority for Fortnite. Expect steadier frames and a few "
+         "% more FPS, not miracles.",
+         "Store app notifications stop, and Discord audio may crackle under full CPU load. "
+         "Needs a restart.",
+         "#b91c1c", ["game_mode", "game_dvr", "power_plan", "game_bar_overlay",
+                     "hags", "background_apps", "fortnite_priority"]),
+]
+
+MODE_TWEAK_IDS = {tid for mode in MODES for tid in mode.tweak_ids}
