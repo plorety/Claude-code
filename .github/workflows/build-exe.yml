@@ -7,6 +7,7 @@ on:
 
 env:
   PRESENTMON_VERSION: "2.3.0"
+  PRESENTMON_SHA256: "690533cf5c2591ef571a3037aa4c205c8e75860ef3f56927bf3a98acf7198485"
 
 jobs:
   build:
@@ -46,7 +47,9 @@ jobs:
         run: |
           $url = "https://github.com/GameTechDev/PresentMon/releases/download/v$env:PRESENTMON_VERSION/PresentMon-$env:PRESENTMON_VERSION-x64.exe"
           Invoke-WebRequest -Uri $url -OutFile PresentMon.exe
-          "PresentMon SHA256: " + (Get-FileHash PresentMon.exe -Algorithm SHA256).Hash
+          $hash = (Get-FileHash PresentMon.exe -Algorithm SHA256).Hash
+          "PresentMon SHA256: $hash"
+          if ($hash -ne $env:PRESENTMON_SHA256) { "Checksum mismatch, refusing to bundle"; exit 1 }
 
       - name: Check PresentMon accepts the app's options
         shell: pwsh

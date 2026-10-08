@@ -33,7 +33,7 @@ GAME_EXE = "FortniteClient-Win64-Shipping.exe"
 PRESENTMON_VERSION = "2.3.0"
 PRESENTMON_URL = (f"https://github.com/GameTechDev/PresentMon/releases/download/"
                   f"v{PRESENTMON_VERSION}/PresentMon-{PRESENTMON_VERSION}-x64.exe")
-PRESENTMON_SHA256 = ""  # filled in once verified by the CI build; empty = not checked
+PRESENTMON_SHA256 = "690533cf5c2591ef571a3037aa4c205c8e75860ef3f56927bf3a98acf7198485"
 
 HIGHER, LOWER = True, False
 
