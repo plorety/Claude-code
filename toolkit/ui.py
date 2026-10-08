@@ -13,7 +13,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 import psutil
 
-from . import actions, sysinfo
+from . import actions, benchmark, sysinfo
 from .actions import Action
 from .tweaks import MODE_TWEAK_IDS, MODES, TWEAKS, Mode, Tweak
 from .winutils import IS_WINDOWS, WindowsOnlyError, write_log_file
@@ -32,6 +32,7 @@ IMPACT = {
 
 PAGES = [
     ("home", "⌂", "Home"),
+    ("benchmark", "⏱", "Benchmark"),
     ("windows", "⊞", "Windows"),
     ("network", "⇅", "Network"),
     ("cleanup", "♻", "Cleanup"),
@@ -233,6 +234,8 @@ class App(ctk.CTk):
         self._job_running = False
         self.tweak_cards: list[ItemCard] = []
         self.mode_cards: list[ModeCard] = []
+        self.active_mode: str | None = None
+        self._runs: list[dict] = []
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         self.pages: dict[str, ctk.CTkScrollableFrame] = {}
 
@@ -357,6 +360,7 @@ class App(ctk.CTk):
 
     def _build_pages(self) -> None:
         self._build_home()
+        self._build_benchmark()
 
         tweaks = {t.id: t for t in TWEAKS}
 
@@ -437,16 +441,16 @@ class App(ctk.CTk):
         quick.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(quick, text="Quick start", font=font(15, "bold"), anchor="w").grid(
             row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
-        WrapLabel(quick, text="1.  Create a restore point\n2.  Pick a mode below\n"
-                              "3.  Set up Fortnite with the guide", font=font(12),
+        WrapLabel(quick, text="1.  Create a restore point\n2.  Run a 'Before' benchmark\n"
+                              "3.  Pick a mode below, then benchmark again", font=font(12),
                   text_color=C["muted"]).grid(row=1, column=0, sticky="ew", padx=16)
         ctk.CTkButton(quick, text="Create restore point", height=34, corner_radius=8,
                       fg_color=C["accent"], hover_color=C["accent_hover"], font=font(12, "bold"),
                       command=lambda: self.run_action(actions.RESTORE_POINT)).grid(
             row=2, column=0, sticky="ew", padx=16, pady=(12, 4))
-        ctk.CTkButton(quick, text="Open Fortnite guide", height=34, corner_radius=8,
+        ctk.CTkButton(quick, text="Open Benchmark", height=34, corner_radius=8,
                       fg_color=C["button2"], hover_color=C["button2_hover"], font=font(12),
-                      command=lambda: self.show("guide")).grid(
+                      command=lambda: self.show("benchmark")).grid(
             row=3, column=0, sticky="ew", padx=16, pady=(4, 14))
 
         conn = Card(boxes)
@@ -479,6 +483,97 @@ class App(ctk.CTk):
         self.cpu_graph.grid(row=row, column=0, sticky="nsew", padx=6, pady=6)
         self.ram_graph = UsageGraph(page, "RAM usage")
         self.ram_graph.grid(row=row, column=1, sticky="nsew", padx=6, pady=6)
+
+    def _build_benchmark(self) -> None:
+        page = self._new_page("benchmark")
+        row = self._header(page, "Benchmark", "Test before and after you change settings, then "
+                                              "compare the two runs side by side.")
+        self._text_card(page, row, 0, "How to compare fairly", [
+            "Run a test and name it 'Before'.",
+            "Pick a mode on the Home page (and restart if it says so).",
+            "Run the same test again, named 'After'. The comparison appears below.",
+            "Results vary a little every run, so only trust clear differences. Running each "
+            "test twice helps.",
+        ], span=2)
+        row += 1
+
+        name_card = Card(page)
+        name_card.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
+        name_card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(name_card, text="Name this run", font=font(13, "bold")).grid(
+            row=0, column=0, padx=(16, 12), pady=14)
+        self.run_name = ctk.CTkEntry(name_card, height=34, corner_radius=8, font=font(13),
+                                     placeholder_text="e.g. Before, After Extreme",
+                                     fg_color=C["bg"], border_color=C["card_border"])
+        self.run_name.insert(0, "Before")
+        self.run_name.grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=14)
+        row += 1
+
+        row = self._section(page, row, "Run a test")
+        system = self._test_card(page, row, 0, "System test", "about 12 s",
+                                 "Measures what the tweaks change: how fast Windows wakes up "
+                                 "programs, how quickly the CPU ramps up, and background load. "
+                                 "Close games and downloads first. No game needed.")
+        ctk.CTkButton(system, text="Run system test", height=36, corner_radius=8,
+                      font=font(13, "bold"), fg_color=C["accent"], hover_color=C["accent_hover"],
+                      command=self._run_system_test).grid(
+            row=3, column=0, sticky="sew", padx=16, pady=(12, 14))
+
+        game = self._test_card(page, row, 1, "In-game FPS test", "Fortnite",
+                               "Records real frame times while you play, using Intel's free "
+                               "PresentMon (it never touches the game). Do the same thing each "
+                               "run, like the same Creative map, for a fair comparison.")
+        controls = ctk.CTkFrame(game, fg_color="transparent")
+        controls.grid(row=3, column=0, sticky="sew", padx=16, pady=(12, 14))
+        controls.grid_columnconfigure(1, weight=1)
+        self.duration = ctk.CTkSegmentedButton(controls, values=["30 s", "60 s", "120 s"],
+                                               font=font(12), height=36,
+                                               selected_color=C["accent"],
+                                               selected_hover_color=C["accent_hover"])
+        self.duration.set("60 s")
+        self.duration.grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkButton(controls, text="Run FPS test", height=36, corner_radius=8,
+                      font=font(13, "bold"), fg_color=C["accent"], hover_color=C["accent_hover"],
+                      command=self._run_game_test).grid(row=0, column=1, sticky="ew")
+        row += 1
+
+        row = self._section(page, row, "Compare")
+        cmp = Card(page)
+        cmp.grid(row=row, column=0, columnspan=2, sticky="ew", padx=6, pady=6)
+        cmp.grid_columnconfigure(0, weight=1)
+        pick = ctk.CTkFrame(cmp, fg_color="transparent")
+        pick.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
+        pick.grid_columnconfigure((0, 2), weight=1, uniform="pick")
+        menu_style = dict(height=34, corner_radius=8, font=font(12), fg_color=C["button2"],
+                          button_color=C["button2"], button_hover_color=C["button2_hover"],
+                          dynamic_resizing=False, command=lambda _v: self._render_compare())
+        self.run_a = ctk.CTkOptionMenu(pick, values=["—"], **menu_style)
+        self.run_a.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(pick, text="vs", font=font(13, "bold"), text_color=C["muted"]).grid(
+            row=0, column=1, padx=12)
+        self.run_b = ctk.CTkOptionMenu(pick, values=["—"], **menu_style)
+        self.run_b.grid(row=0, column=2, sticky="ew")
+        ctk.CTkButton(pick, text="Clear results", width=110, height=34, corner_radius=8,
+                      font=font(12), fg_color=C["button2"], hover_color=C["button2_hover"],
+                      command=self._clear_results).grid(row=0, column=3, padx=(12, 0))
+        self.compare_body = ctk.CTkFrame(cmp, fg_color="transparent")
+        self.compare_body.grid(row=1, column=0, sticky="ew", padx=16, pady=(6, 14))
+        self._refresh_compare()
+
+    def _test_card(self, page, row: int, col: int, title: str, tag: str, text: str) -> Card:
+        card = Card(page)
+        card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(2, weight=1)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
+        head.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(head, text=title, font=font(16, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="w")
+        badge(head, tag, IMPACT["Diagnostic"]).grid(row=0, column=1)
+        WrapLabel(card, text=text, font=font(12), text_color=C["muted"]).grid(
+            row=1, column=0, sticky="ew", padx=16)
+        return card
 
     def _build_guide(self) -> None:
         page = self._new_page("guide")
@@ -639,6 +734,110 @@ class App(ctk.CTk):
         self.log(f"Switching to {mode.name} mode")
         self.run_job(f"{mode.name} mode", job)
 
+    # ------------------------------------------------------------------ benchmark
+
+    def _run_label(self) -> str:
+        return self.run_name.get().strip() or (f"{self.active_mode} mode" if self.active_mode
+                                               else "Unnamed")
+
+    def _after_test(self, result: dict) -> None:
+        if self.run_name.get().strip().lower() == "before":
+            self.run_name.delete(0, "end")
+            self.run_name.insert(0, "After")
+        self._refresh_compare(latest=result)
+
+    def _run_system_test(self) -> None:
+        label = self._run_label()
+
+        def job(log):
+            return benchmark.save_result("system", label, benchmark.system_test(log))
+
+        self.log(f"System test: {label}")
+        self.run_job("System test", job, on_result=self._after_test)
+
+    def _run_game_test(self) -> None:
+        seconds = int(self.duration.get().split()[0])
+        if not messagebox.askyesno(
+                "In-game FPS test",
+                "Fortnite needs to be running.\n\n"
+                "After you click Yes you have 10 seconds to switch to the game. You'll hear a "
+                f"beep when recording starts, and another when it stops ({seconds} seconds).\n\n"
+                "Do the same thing every run for a fair comparison. The first time, the app may "
+                "download PresentMon (Intel's free, open-source frame-time tool). Continue?"):
+            return
+        label = self._run_label()
+
+        def job(log):
+            return benchmark.save_result("game", label, benchmark.game_test(log, seconds))
+
+        self.log(f"In-game FPS test ({seconds} s): {label}")
+        self.run_job("FPS test", job, on_result=self._after_test)
+
+    def _clear_results(self) -> None:
+        if messagebox.askyesno("FPS Toolkit", "Delete all saved benchmark results?"):
+            benchmark.clear_results()
+            self._refresh_compare()
+
+    @staticmethod
+    def _run_title(index: int, run: dict) -> str:
+        kind = "System" if run["kind"] == "system" else "FPS"
+        return f"{index + 1}. {run['label']}  ·  {kind}  ·  {run['time']}"
+
+    def _refresh_compare(self, latest: dict | None = None) -> None:
+        self._runs = benchmark.load_results()
+        titles = [self._run_title(i, r) for i, r in enumerate(self._runs)] or ["—"]
+        self.run_a.configure(values=titles)
+        self.run_b.configure(values=titles)
+        if len(self._runs) >= 2:
+            last = len(self._runs) - 1
+            same_kind = [i for i in range(last) if self._runs[i]["kind"] == self._runs[last]["kind"]]
+            if latest or self.run_b.get() not in titles or self.run_a.get() not in titles:
+                self.run_a.set(titles[same_kind[-1] if same_kind else last - 1])
+                self.run_b.set(titles[last])
+        else:
+            self.run_a.set(titles[0])
+            self.run_b.set(titles[-1])
+        self._render_compare()
+
+    def _render_compare(self) -> None:
+        for child in self.compare_body.winfo_children():
+            child.destroy()
+        body = self.compare_body
+
+        def note(text: str) -> None:
+            ctk.CTkLabel(body, text=text, font=font(12), text_color=C["muted"], anchor="w").grid(
+                row=0, column=0, sticky="w")
+
+        titles = [self._run_title(i, r) for i, r in enumerate(self._runs)]
+        if len(self._runs) < 2:
+            note("Run at least two tests to compare them." if not self._runs else
+                 "One result saved. Run the test again after changing settings to compare.")
+            return
+        a = self._runs[titles.index(self.run_a.get())]
+        b = self._runs[titles.index(self.run_b.get())]
+        if a["kind"] != b["kind"]:
+            note("Pick two runs of the same test type (System vs System, or FPS vs FPS).")
+            return
+
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure((1, 2, 3), weight=2, uniform="val")
+        for col, text in enumerate(("Metric", a["label"], b["label"], "Change")):
+            ctk.CTkLabel(body, text=text, font=font(12, "bold"), text_color=C["muted"],
+                         anchor="w").grid(row=0, column=col, sticky="ew", pady=(0, 4))
+        colors = {"better": C["good"], "worse": C["bad"], "same": C["muted"]}
+        rows = benchmark.compare(a, b)
+        for r, (name, va, vb, change, verdict) in enumerate(rows, start=1):
+            for col, text in enumerate((name, va, vb)):
+                ctk.CTkLabel(body, text=text, font=font(13), anchor="w").grid(
+                    row=r, column=col, sticky="ew", pady=2)
+            ctk.CTkLabel(body, text=change, font=font(13, "bold"), anchor="w",
+                         text_color=colors[verdict]).grid(row=r, column=3, sticky="ew", pady=2)
+        counts = {v: sum(1 for row in rows if row[4] == v) for v in colors}
+        ctk.CTkLabel(body, text=f"{counts['better']} better  ·  {counts['worse']} worse  ·  "
+                                f"{counts['same']} about the same",
+                     font=font(12), text_color=C["muted"], anchor="w").grid(
+            row=len(rows) + 1, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
     def _revert_all(self, log) -> None:
         for t in TWEAKS:
             if t.status():
@@ -661,6 +860,8 @@ class App(ctk.CTk):
             on = {tid for tid in MODE_TWEAK_IDS if statuses.get(tid)}
             for card in self.mode_cards:
                 self.call_ui(card.set_active, on == set(card.mode.tweak_ids))
+            active = next((m.name for m in MODES if on == set(m.tweak_ids)), None)
+            self.call_ui(setattr, self, "active_mode", active)
 
         threading.Thread(target=worker, daemon=True).start()
 

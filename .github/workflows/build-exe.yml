@@ -5,9 +5,13 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
+env:
+  PRESENTMON_VERSION: "2.3.0"
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -19,12 +23,35 @@ jobs:
         run: python -m pip install -r requirements.txt pyinstaller
 
       - name: Check the app imports
-        run: python -c "import toolkit.ui, toolkit.tweaks, toolkit.actions"
+        run: python -c "import toolkit.ui, toolkit.tweaks, toolkit.actions, toolkit.benchmark"
+
+      - name: Run the system test on Windows
+        run: python -c "from toolkit import benchmark as B; print(B.system_test(print))"
+
+      - name: Download PresentMon
+        shell: pwsh
+        run: |
+          $url = "https://github.com/GameTechDev/PresentMon/releases/download/v$env:PRESENTMON_VERSION/PresentMon-$env:PRESENTMON_VERSION-x64.exe"
+          Invoke-WebRequest -Uri $url -OutFile PresentMon.exe
+          "PresentMon SHA256: " + (Get-FileHash PresentMon.exe -Algorithm SHA256).Hash
+
+      - name: Check PresentMon accepts the app's options
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\PresentMon.exe -NoNewWindow -PassThru -ArgumentList @(
+            "--process_name", "FortniteClient-Win64-Shipping.exe", "--output_file", "pm-check.csv",
+            "--timed", "2", "--terminate_after_timed", "--terminate_on_proc_exit",
+            "--stop_existing_session", "--session_name", "FPSToolkit",
+            "--no_console_stats", "--v1_metrics")
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); "PresentMon did not stop within 60 s"; exit 1 }
+          "PresentMon exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
 
       - name: Build exe
         run: >
           python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin
-          --name FPSToolkit --collect-data customtkinter fps_toolkit.py
+          --name FPSToolkit --collect-data customtkinter
+          --add-binary "PresentMon.exe;." fps_toolkit.py
 
       - uses: actions/upload-artifact@v4
         with:

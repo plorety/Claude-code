@@ -40,11 +40,31 @@ you can move between them freely.
 Extreme gives steadier frames and a few % more FPS. It's not a miracle, and it still leaves out
 anything unsafe (see below).
 
+## Benchmark: before and after
+
+The **Benchmark** page tests your PC before and after you change settings and shows the
+difference side by side. Name a run "Before", pick a mode, run it again as "After" and compare.
+
+- **System test (about 12 s, no game needed):** timer wake-up delay, CPU burst time (how fast
+  the CPU ramps up from idle), sustained CPU speed, background CPU use, running processes and RAM.
+  These are what the tweaks actually change.
+- **In-game FPS test (30/60/120 s):** start Fortnite, click Run, switch to the game, and play.
+  It records real frame times with Intel's free, open-source
+  [PresentMon](https://github.com/GameTechDev/PresentMon), which reads Windows' own graphics events
+  and never touches the game. You get average FPS, 1% and 0.1% lows, average frame time and
+  stutters per minute. PresentMon is built into the downloaded exe. When running from source, it's
+  downloaded on the first FPS test.
+
+Every run repeats its measurements and records how much they vary. A difference only shows as
+**better** or **worse** when it's bigger than that variation; otherwise it shows **≈ same**. Results
+are saved in `%LOCALAPPDATA%\FPSToolkit\benchmarks.json`.
+
 ## What's inside
 
 | Page | What it does |
 | --- | --- |
 | Home | Your PC specs, the three modes, live CPU/RAM graphs, connection test |
+| Benchmark | System test and in-game FPS test, saved runs, before/after comparison |
 | Windows | Ultimate Performance power plan, Game Mode, turn off background game recording, mouse acceleration off, GPU hardware scheduling, Game Bar overlay off, Store apps in the background, Fortnite CPU priority, refresh-rate check |
 | Network | Ping / jitter / packet-loss test, Wi-Fi vs Ethernet check, DNS flush, network reset |
 | Cleanup | Temp files, Recycle Bin, startup apps, uninstall apps, Disk Cleanup, DISM + SFC repair |
