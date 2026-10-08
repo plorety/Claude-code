@@ -26,8 +26,6 @@ administrator rights when it starts. Some antivirus programs wrongly flag new Py
 because they're unsigned. If that happens, building it yourself with `build.bat` gives you an exe
 made from the code you can read here.
 
-## What's inside
-
 ## Modes
 
 Pick one on the Home page. Switching modes also undoes the tweaks the new mode doesn't use, so
@@ -41,6 +39,8 @@ you can move between them freely.
 
 Extreme gives steadier frames and a few % more FPS. It's not a miracle, and it still leaves out
 anything unsafe (see below).
+
+## What's inside
 
 | Page | What it does |
 | --- | --- |
