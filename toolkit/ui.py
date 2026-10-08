@@ -1,0 +1,627 @@
+"""CustomTkinter interface: sidebar navigation, tweak cards, live CPU/RAM graphs and a log."""
+
+from __future__ import annotations
+
+import getpass
+import queue
+import threading
+import tkinter as tk
+from collections import deque
+from datetime import datetime
+from tkinter import messagebox
+
+import customtkinter as ctk
+import psutil
+
+from . import actions, sysinfo
+from .actions import Action
+from .tweaks import TWEAKS, Tweak
+from .winutils import IS_WINDOWS, WindowsOnlyError, write_log_file
+
+C = {
+    "bg": "#0f1013", "sidebar": "#15161a", "card": "#1c1d22", "card_border": "#2a2c33",
+    "hover": "#25272e", "text": "#ececf1", "muted": "#8b8e99", "accent": "#3b82f6",
+    "accent_hover": "#2563eb", "accent_soft": "#1b2a45", "good": "#22c55e", "bad": "#ef4444",
+    "graph_fill": "#16284a", "grid": "#262830", "button2": "#2b2d35", "button2_hover": "#363944",
+}
+
+IMPACT = {
+    "Real gain": "#15803d", "Small gain": "#1d4ed8", "Preference": "#6d28d9",
+    "Maintenance": "#3f4654", "Diagnostic": "#0e7490", "Repair": "#a16207", "Safety": "#15803d",
+}
+
+PAGES = [
+    ("home", "⌂", "Home"),
+    ("windows", "⊞", "Windows"),
+    ("network", "⇅", "Network"),
+    ("cleanup", "♻", "Cleanup"),
+    ("gpu", "▣", "GPU"),
+    ("guide", "★", "Fortnite guide"),
+    ("safety", "✚", "Safety"),
+]
+
+
+def font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
+    return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
+
+
+# =========================================================================== widgets
+
+class WrapLabel(ctk.CTkLabel):
+    """A label that re-wraps its text when its width changes."""
+
+    def __init__(self, master, **kwargs) -> None:
+        kwargs.setdefault("justify", "left")
+        kwargs.setdefault("anchor", "w")
+        super().__init__(master, wraplength=360, **kwargs)
+        self._last = 0
+        self._pending = None
+        self.bind("<Configure>", self._schedule)
+
+    def _schedule(self, _event) -> None:
+        # Rewrapping inside a layout pass makes CTkScrollableFrame recurse forever,
+        # so do it shortly after the layout settles instead.
+        if self._pending:
+            self.after_cancel(self._pending)
+        self._pending = self.after(40, self._rewrap)
+
+    def _rewrap(self) -> None:
+        self._pending = None
+        width = max(self.winfo_width() - 8, 120)
+        if abs(width - self._last) > 12:
+            self._last = width
+            self.configure(wraplength=width)
+
+
+def badge(master, text: str, color: str) -> ctk.CTkLabel:
+    return ctk.CTkLabel(master, text=f" {text} ", fg_color=color, corner_radius=6,
+                        text_color="#ffffff", font=font(11, "bold"), height=20)
+
+
+class Card(ctk.CTkFrame):
+    def __init__(self, master, **kwargs) -> None:
+        super().__init__(master, fg_color=C["card"], corner_radius=14, border_width=1,
+                         border_color=C["card_border"], **kwargs)
+
+
+class ItemCard(Card):
+    """Card for a Tweak (Apply / Revert + status) or an Action (one button)."""
+
+    def __init__(self, master, app: "App", item: Tweak | Action) -> None:
+        super().__init__(master)
+        self.app = app
+        self.item = item
+        self.is_tweak = isinstance(item, Tweak)
+        self.grid_columnconfigure(0, weight=1)
+
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
+        head.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(head, text=item.title, font=font(15, "bold"), anchor="w",
+                     text_color=C["text"]).grid(row=0, column=0, sticky="w")
+        col = 1
+        if item.restart:
+            badge(head, "Restart", "#7c2d12").grid(row=0, column=col, padx=(6, 0))
+            col += 1
+        badge(head, item.impact, IMPACT.get(item.impact, "#3f4654")).grid(
+            row=0, column=col, padx=(6, 0))
+
+        WrapLabel(self, text=item.description, text_color=C["muted"], font=font(12)).grid(
+            row=1, column=0, sticky="ew", padx=16)
+
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.grid(row=2, column=0, sticky="ew", padx=16, pady=(10, 14))
+        foot.grid_columnconfigure(0, weight=1)
+        self.status = ctk.CTkLabel(foot, text="", font=font(12), anchor="w")
+        self.status.grid(row=0, column=0, sticky="w")
+
+        if self.is_tweak:
+            self.revert_btn = ctk.CTkButton(
+                foot, text="Revert", width=84, height=32, corner_radius=8, font=font(12),
+                fg_color=C["button2"], hover_color=C["button2_hover"],
+                command=lambda: app.run_tweak(item, apply=False))
+            self.revert_btn.grid(row=0, column=1, padx=(6, 0))
+            self.apply_btn = ctk.CTkButton(
+                foot, text="Apply", width=84, height=32, corner_radius=8, font=font(12, "bold"),
+                fg_color=C["accent"], hover_color=C["accent_hover"],
+                command=lambda: app.run_tweak(item, apply=True))
+            self.apply_btn.grid(row=0, column=2, padx=(6, 0))
+            self.set_status(None if IS_WINDOWS else "windows-only")
+        else:
+            ctk.CTkButton(
+                foot, text=item.button, width=100, height=32, corner_radius=8,
+                font=font(12, "bold"), fg_color=C["accent"], hover_color=C["accent_hover"],
+                command=lambda: app.run_action(item)).grid(row=0, column=1)
+
+    def set_status(self, applied) -> None:
+        if applied is True:
+            self.status.configure(text="●  Applied", text_color=C["good"])
+        elif applied is False:
+            self.status.configure(text="○  Not applied", text_color=C["muted"])
+        elif applied == "windows-only":
+            self.status.configure(text="—  Windows only", text_color=C["muted"])
+        else:
+            self.status.configure(text="…", text_color=C["muted"])
+
+
+class UsageGraph(Card):
+    def __init__(self, master, name: str) -> None:
+        super().__init__(master)
+        self.name = name
+        self.values: deque[float] = deque([0.0] * 60, maxlen=60)
+        self.title = ctk.CTkLabel(self, text=f"{name}", font=font(18, "bold"), anchor="w")
+        self.title.pack(fill="x", padx=16, pady=(12, 4))
+        self.canvas = tk.Canvas(self, height=130, bg=C["card"], highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.canvas.bind("<Configure>", lambda _e: self.redraw())
+
+    def push(self, value: float) -> None:
+        self.values.append(value)
+        self.title.configure(text=f"{self.name}  ({value:.0f}%)")
+        self.redraw()
+
+    def redraw(self) -> None:
+        c = self.canvas
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 10 or h < 10:
+            return
+        for pct in (25, 50, 75):
+            y = h - pct / 100 * h
+            c.create_line(0, y, w, y, fill=C["grid"], dash=(2, 4))
+        step = w / (len(self.values) - 1)
+        points = []
+        for i, v in enumerate(self.values):
+            points += [i * step, h - 2 - v / 100 * (h - 4)]
+        c.create_polygon(0, h, *points, w, h, fill=C["graph_fill"], outline="")
+        c.create_line(*points, fill=C["accent"], width=2)
+
+
+# =========================================================================== app
+
+class App(ctk.CTk):
+    def __init__(self, admin: bool) -> None:
+        super().__init__(fg_color=C["bg"])
+        ctk.set_appearance_mode("dark")
+        self.admin = admin
+        self.title("FPS Toolkit" + ("  —  Administrator" if admin else ""))
+        self.geometry("1200x780")
+        self.minsize(1000, 640)
+
+        self._events: queue.Queue = queue.Queue()
+        self._job_running = False
+        self.tweak_cards: list[ItemCard] = []
+        self.nav_buttons: dict[str, ctk.CTkButton] = {}
+        self.pages: dict[str, ctk.CTkScrollableFrame] = {}
+
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self._build_sidebar()
+        self._build_main()
+        self._build_pages()
+        self.show("home")
+
+        self.log("FPS Toolkit started" + (" as administrator" if admin else ""))
+        if IS_WINDOWS and not admin:
+            self.log("⚠ Not running as administrator, so system-wide tweaks will fail. "
+                     "Restart the app and accept the UAC prompt.")
+        if not IS_WINDOWS:
+            self.log("Preview mode: this isn't Windows, so buttons won't change anything.")
+
+        psutil.cpu_percent(interval=None)
+        self.after(60, self._pump)
+        self.after(1000, self._tick_stats)
+        threading.Thread(target=self._load_sysinfo, daemon=True).start()
+        self.refresh_statuses()
+
+    # ------------------------------------------------------------------ layout
+
+    def _build_sidebar(self) -> None:
+        bar = ctk.CTkFrame(self, fg_color=C["sidebar"], corner_radius=0, width=220)
+        bar.grid(row=0, column=0, sticky="nsw")
+        bar.grid_propagate(False)
+        bar.grid_columnconfigure(0, weight=1)
+        bar.grid_rowconfigure(len(PAGES) + 2, weight=1)
+
+        ctk.CTkLabel(bar, text="FPS Toolkit", font=font(22, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=22, pady=(24, 0))
+        ctk.CTkLabel(bar, text="free · open source · reversible", font=font(11),
+                     text_color=C["muted"], anchor="w").grid(
+            row=1, column=0, sticky="ew", padx=22, pady=(0, 20))
+
+        for i, (key, icon, label) in enumerate(PAGES):
+            btn = ctk.CTkButton(
+                bar, text=f"  {icon}    {label}", anchor="w", height=42, corner_radius=10,
+                font=font(14), fg_color="transparent", hover_color=C["hover"],
+                text_color=C["muted"], command=lambda k=key: self.show(k))
+            btn.grid(row=i + 2, column=0, sticky="new", padx=12, pady=2)
+            self.nav_buttons[key] = btn
+
+        ok = self.admin
+        text = "●  Administrator" if ok else ("●  Not administrator" if IS_WINDOWS else "●  Preview mode")
+        ctk.CTkLabel(bar, text=text, font=font(12), anchor="w",
+                     text_color=C["good"] if ok else C["bad"]).grid(
+            row=len(PAGES) + 3, column=0, sticky="sew", padx=22, pady=(0, 18))
+
+    def _build_main(self) -> None:
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.grid(row=0, column=1, sticky="nsew", padx=(8, 16), pady=(12, 12))
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(0, weight=1)
+        self.page_holder = ctk.CTkFrame(main, fg_color="transparent")
+        self.page_holder.grid(row=0, column=0, sticky="nsew")
+        self.page_holder.grid_columnconfigure(0, weight=1)
+        self.page_holder.grid_rowconfigure(0, weight=1)
+
+        bottom = Card(main)
+        bottom.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        bottom.grid_columnconfigure(0, weight=1)
+        top = ctk.CTkFrame(bottom, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 0))
+        top.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(top, text="Activity", font=font(13, "bold")).grid(row=0, column=0)
+        self.job_label = ctk.CTkLabel(top, text="", font=font(12), text_color=C["muted"])
+        self.job_label.grid(row=0, column=1, sticky="e", padx=10)
+        self.progress = ctk.CTkProgressBar(top, width=140, mode="indeterminate",
+                                           progress_color=C["accent"])
+        self.progress.grid(row=0, column=2)
+        self.progress.grid_remove()
+        self.logbox = ctk.CTkTextbox(bottom, height=96, font=ctk.CTkFont(family="Consolas", size=12),
+                                     fg_color=C["bg"], text_color="#c9cbd3", corner_radius=10)
+        self.logbox.grid(row=1, column=0, sticky="ew", padx=10, pady=(6, 10))
+        self.logbox.configure(state="disabled")
+
+    def _new_page(self, key: str) -> ctk.CTkScrollableFrame:
+        page = ctk.CTkScrollableFrame(self.page_holder, fg_color="transparent",
+                                      scrollbar_button_color=C["button2"])
+        page.grid_columnconfigure((0, 1), weight=1, uniform="col")
+        self.pages[key] = page
+        return page
+
+    def _header(self, page, title: str, subtitle: str) -> int:
+        ctk.CTkLabel(page, text=title, font=font(28, "bold"), anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))
+        WrapLabel(page, text=subtitle, font=font(13), text_color=C["muted"]).grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
+        return 2
+
+    def _section(self, page, row: int, title: str) -> int:
+        ctk.CTkLabel(page, text=title.upper(), font=font(11, "bold"), text_color=C["muted"],
+                     anchor="w").grid(row=row, column=0, columnspan=2, sticky="ew",
+                                      padx=8, pady=(16, 2))
+        return row + 1
+
+    def _cards(self, page, row: int, items) -> int:
+        for i, item in enumerate(items):
+            card = ItemCard(page, self, item)
+            card.grid(row=row + i // 2, column=i % 2, sticky="nsew", padx=6, pady=6)
+            if card.is_tweak:
+                self.tweak_cards.append(card)
+        return row + (len(items) + 1) // 2
+
+    def _text_card(self, page, row: int, col: int, title: str, lines: list[str],
+                   span: int = 1) -> None:
+        card = Card(page)
+        card.grid(row=row, column=col, columnspan=span, sticky="nsew", padx=6, pady=6)
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(card, text=title, font=font(15, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
+        for i, line in enumerate(lines, start=1):
+            WrapLabel(card, text=f"•  {line}", font=font(12), text_color=C["muted"]).grid(
+                row=i, column=0, sticky="ew", padx=16, pady=2)
+        ctk.CTkFrame(card, fg_color="transparent", width=1, height=8).grid(row=len(lines) + 1, column=0)
+
+    # ------------------------------------------------------------------ pages
+
+    def _build_pages(self) -> None:
+        self._build_home()
+
+        tweaks = {t.id: t for t in TWEAKS}
+
+        page = self._new_page("windows")
+        row = self._header(page, "Windows", "Settings that affect frame times and input. "
+                                            "Each one shows whether it's applied and can be reverted.")
+        row = self._section(page, row, "Performance")
+        row = self._cards(page, row, [tweaks["power_plan"], tweaks["game_dvr"],
+                                      tweaks["game_mode"], tweaks["hags"]])
+        row = self._section(page, row, "Input & display")
+        row = self._cards(page, row, [tweaks["mouse_accel"], *actions.WINDOWS_ACTIONS])
+
+        page = self._new_page("network")
+        row = self._header(page, "Network", "Software can't shorten the distance to Fortnite's "
+                                            "servers, but it can show you what's wrong. Most lag "
+                                            "spikes and packet loss come from Wi-Fi.")
+        self._cards(page, row, actions.NETWORK_ACTIONS)
+
+        page = self._new_page("cleanup")
+        row = self._header(page, "Cleanup", "Free up space and stop programs you don't need "
+                                            "running in the background.")
+        self._cards(page, row, actions.CLEANUP_ACTIONS)
+
+        page = self._new_page("gpu")
+        row = self._header(page, "GPU", "Drivers and graphics settings. Your in-game settings "
+                                        "matter more than anything here, see the Fortnite guide.")
+        self.gpu_info = WrapLabel(page, text="Detecting graphics card…", font=font(13),
+                                  text_color=C["text"])
+        self.gpu_info.grid(row=row, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 4))
+        self._cards(page, row + 1, actions.GPU_ACTIONS)
+
+        self._build_guide()
+
+        page = self._new_page("safety")
+        row = self._header(page, "Safety", "Everything this app changes is backed up first. "
+                                           "Make a restore point before you start.")
+        row = self._cards(page, row, actions.SAFETY_ACTIONS)
+        revert_all = Action("revert_all", "Revert all tweaks",
+                            "Undoes every tweak that's currently applied and restores your "
+                            "original settings from the backup.",
+                            "Safety", "Revert all", self._revert_all,
+                            confirm="Revert every applied tweak to your original settings?")
+        self._cards(page, row, [revert_all])
+
+    def _build_home(self) -> None:
+        page = self._new_page("home")
+        name = getpass.getuser() or "User"
+        row = self._header(page, f"Welcome, {name}!",
+                           "Free, transparent tweaks for smoother frames and lower input delay. "
+                           "No mystery scripts: every button says what it does.")
+        row = self._section(page, row, "Overview")
+
+        boxes = ctk.CTkFrame(page, fg_color="transparent")
+        boxes.grid(row=row, column=0, columnspan=2, sticky="ew")
+        boxes.grid_columnconfigure((0, 1, 2), weight=1, uniform="box")
+        row += 1
+
+        pc = Card(boxes)
+        pc.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        pc.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(pc, text="Your PC", font=font(15, "bold"), anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(14, 6))
+        self.pc_labels = {}
+        for i, key in enumerate(("CPU", "GPU", "RAM", "Windows", "Network"), start=1):
+            ctk.CTkLabel(pc, text=key, font=font(12, "bold"), text_color=C["muted"],
+                         anchor="w", width=72).grid(row=i, column=0, sticky="nw", padx=(16, 4), pady=1)
+            lbl = ctk.CTkLabel(pc, text="…", font=font(12), anchor="w", justify="left",
+                               wraplength=190)
+            lbl.grid(row=i, column=1, sticky="ew", padx=(0, 12), pady=1)
+            self.pc_labels[key] = lbl
+        ctk.CTkFrame(pc, fg_color="transparent", width=1, height=10).grid(row=9, column=0)
+
+        quick = Card(boxes)
+        quick.grid(row=0, column=1, sticky="nsew", padx=6, pady=6)
+        quick.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(quick, text="Quick start", font=font(15, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
+        WrapLabel(quick, text="1.  Create a restore point\n2.  Apply the recommended tweaks\n"
+                              "3.  Set up Fortnite with the guide", font=font(12),
+                  text_color=C["muted"]).grid(row=1, column=0, sticky="ew", padx=16)
+        ctk.CTkButton(quick, text="Create restore point", height=34, corner_radius=8,
+                      fg_color=C["button2"], hover_color=C["button2_hover"], font=font(12),
+                      command=lambda: self.run_action(actions.RESTORE_POINT)).grid(
+            row=2, column=0, sticky="ew", padx=16, pady=(12, 4))
+        ctk.CTkButton(quick, text="Apply recommended tweaks", height=34, corner_radius=8,
+                      fg_color=C["accent"], hover_color=C["accent_hover"], font=font(12, "bold"),
+                      command=self._apply_recommended).grid(
+            row=3, column=0, sticky="ew", padx=16, pady=(4, 14))
+
+        conn = Card(boxes)
+        conn.grid(row=0, column=2, sticky="nsew", padx=6, pady=6)
+        conn.grid_columnconfigure(0, weight=1)
+        conn.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(conn, text="Connection", font=font(15, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
+        self.conn_label = WrapLabel(conn, text="Not tested yet. Checks ping, jitter and "
+                                               "packet loss.", font=font(12), text_color=C["muted"])
+        self.conn_label.grid(row=1, column=0, sticky="new", padx=16)
+        ctk.CTkButton(conn, text="Run connection test", height=34, corner_radius=8,
+                      fg_color=C["button2"], hover_color=C["button2_hover"], font=font(12),
+                      command=lambda: self.run_action(actions.CONNECTION_TEST,
+                                                      on_result=self._show_conn)).grid(
+            row=3, column=0, sticky="sew", padx=16, pady=(12, 14))
+
+        row = self._section(page, row, "PC stats")
+        self.cpu_graph = UsageGraph(page, "CPU usage")
+        self.cpu_graph.grid(row=row, column=0, sticky="nsew", padx=6, pady=6)
+        self.ram_graph = UsageGraph(page, "RAM usage")
+        self.ram_graph.grid(row=row, column=1, sticky="nsew", padx=6, pady=6)
+
+    def _build_guide(self) -> None:
+        page = self._new_page("guide")
+        row = self._header(page, "Fortnite guide", "The settings that make the biggest real "
+                                                   "difference. None of them cost anything.")
+        self._text_card(page, row, 0, "In-game settings", [
+            "NVIDIA Reflex Low Latency: On + Boost. The biggest input-delay setting there is.",
+            "Rendering mode: DirectX 12 or Performance mode. Try both and keep the smoother one.",
+            "Frame rate limit: a cap your PC can hold steadily. A stable 240 feels better than "
+            "a jumpy 300.",
+            "V-Sync off. With G-Sync/FreeSync, cap a few FPS below your refresh rate.",
+            "Turn on 'Net Debug Stats' (HUD settings) to see your real ping and packet loss.",
+            "Matchmaking region: pick the one with the lowest ping.",
+        ])
+        self._text_card(page, row, 1, "Hardware & BIOS", [
+            "Intel 13th/14th gen CPU (e.g. i9-14900K): update your motherboard BIOS to one with "
+            "Intel microcode 0x12B or newer. It fixes a known crash, stutter and degradation "
+            "problem.",
+            "Turn on XMP / EXPO in the BIOS so your RAM runs at its rated speed.",
+            "Plug your monitor into the graphics card, not the motherboard.",
+            "Check the Windows refresh rate is your monitor's max (Windows page).",
+            "Watch temperatures with HWiNFO. Overheating throttles your FPS.",
+        ])
+        self._text_card(page, row + 1, 0, "Network", [
+            "Use an Ethernet cable. It's the best fix for lag spikes and packet loss.",
+            "Ping is mostly the distance to the server. No tweak or program can shrink it.",
+            "Pause downloads and streams on your network while playing.",
+        ])
+        self._text_card(page, row + 1, 1, "What this app won't do (and why)", [
+            "Turn off Spectre/Meltdown mitigations: opens security holes for ~0 FPS on modern CPUs.",
+            "Turn off UAC, Windows Update or Defender: leaves your PC unprotected.",
+            "Turn off 'all services': breaks Wi-Fi, Bluetooth, the Store, printers and more.",
+            "Nagle / TCP / 'network throttling' tweaks: Fortnite uses UDP, so they do nothing.",
+            "BCDEdit timer tweaks, forced GPU P-states, disabling preemption: can make "
+            "stutter and stability worse.",
+        ])
+        self._text_card(page, row + 2, 0, "Getting better at the game", [
+            "Settings remove problems, but they don't make you aim better. Practice does.",
+            "Creative aim and edit courses (warm up 10–15 minutes before playing).",
+            "Keep the same sensitivity so your muscle memory sticks.",
+        ], span=2)
+
+    # ------------------------------------------------------------------ navigation
+
+    def show(self, key: str) -> None:
+        for name, page in self.pages.items():
+            if name == key:
+                page.grid(row=0, column=0, sticky="nsew")
+            else:
+                page.grid_remove()
+        for name, btn in self.nav_buttons.items():
+            selected = name == key
+            btn.configure(fg_color=C["accent_soft"] if selected else "transparent",
+                          text_color=C["accent"] if selected else C["muted"])
+
+    # ------------------------------------------------------------------ thread plumbing
+
+    def call_ui(self, fn, *args) -> None:
+        self._events.put((fn, args))
+
+    def _pump(self) -> None:
+        try:
+            while True:
+                fn, args = self._events.get_nowait()
+                fn(*args)
+        except queue.Empty:
+            pass
+        self.after(60, self._pump)
+
+    def log(self, message: str) -> None:
+        write_log_file(message)
+        self.call_ui(self._append_log, f"{datetime.now():%H:%M:%S}  {message}\n")
+
+    def _append_log(self, text: str) -> None:
+        self.logbox.configure(state="normal")
+        self.logbox.insert("end", text)
+        self.logbox.see("end")
+        self.logbox.configure(state="disabled")
+
+    def run_job(self, label: str, fn, on_result=None) -> None:
+        if self._job_running:
+            messagebox.showinfo("FPS Toolkit", "Another task is still running. Please wait for it to finish.")
+            return
+        self._job_running = True
+        self.job_label.configure(text=f"Working: {label}…")
+        self.progress.grid()
+        self.progress.start()
+
+        def worker() -> None:
+            result = None
+            try:
+                result = fn(self.log)
+                self.log(f"✓ {label}: done")
+            except WindowsOnlyError:
+                self.log(f"✗ {label}: only works on Windows")
+            except PermissionError:
+                self.log(f"✗ {label}: access denied, run the app as administrator")
+            except Exception as exc:  # noqa: BLE001 - show any failure in the log
+                self.log(f"✗ {label} failed: {exc}")
+            self.call_ui(self._job_done, result, on_result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _job_done(self, result, on_result) -> None:
+        self._job_running = False
+        self.progress.stop()
+        self.progress.grid_remove()
+        self.job_label.configure(text="")
+        if on_result and result:
+            on_result(result)
+        self.refresh_statuses()
+
+    def run_tweak(self, tweak: Tweak, apply: bool) -> None:
+        verb = "Apply" if apply else "Revert"
+        self.log(f"{verb}: {tweak.title}")
+
+        def job(log):
+            (tweak.apply if apply else tweak.revert)(log)
+            if tweak.restart:
+                log("    restart your PC for this to take effect")
+
+        self.run_job(f"{verb} {tweak.title}", job)
+
+    def run_action(self, action: Action, on_result=None) -> None:
+        if action.confirm and not messagebox.askyesno("FPS Toolkit", action.confirm):
+            return
+        self.log(f"Run: {action.title}")
+        self.run_job(action.title, action.func, on_result)
+
+    def _apply_recommended(self) -> None:
+        chosen = [t for t in TWEAKS if t.recommended]
+        names = "\n".join(f"•  {t.title}" for t in chosen)
+        if not messagebox.askyesno("FPS Toolkit", f"This will apply:\n\n{names}\n\n"
+                                   "Creating a restore point first is recommended. Continue?"):
+            return
+
+        def job(log):
+            for t in chosen:
+                log(f"Apply: {t.title}")
+                t.apply(log)
+
+        self.run_job("Recommended tweaks", job)
+
+    def _revert_all(self, log) -> None:
+        for t in TWEAKS:
+            if t.status():
+                log(f"Revert: {t.title}")
+                t.revert(log)
+
+    def refresh_statuses(self) -> None:
+        if not IS_WINDOWS:
+            return
+
+        def worker() -> None:
+            for card in self.tweak_cards:
+                try:
+                    value = card.item.status()
+                except Exception:  # noqa: BLE001
+                    value = None
+                self.call_ui(card.set_status, value)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------ live info
+
+    def _tick_stats(self) -> None:
+        self.cpu_graph.push(psutil.cpu_percent(interval=None))
+        self.ram_graph.push(psutil.virtual_memory().percent)
+        self.after(1000, self._tick_stats)
+
+    def _load_sysinfo(self) -> None:
+        def safe(fn, fallback="Unknown"):
+            try:
+                return fn()
+            except Exception:  # noqa: BLE001
+                return fallback
+
+        gpu_list = safe(sysinfo.gpus, [])
+        info = {
+            "CPU": safe(sysinfo.cpu_name),
+            "GPU": ", ".join(name for name, _ in gpu_list) or "Unknown",
+            "RAM": f"{safe(sysinfo.ram_gb)} GB",
+            "Windows": safe(sysinfo.windows_version),
+            "Network": safe(sysinfo.connection_type),
+        }
+        gpu_text = "\n".join(f"Detected: {n}   ·   driver {d}" for n, d in gpu_list) \
+            or "No graphics card detected (preview mode)."
+        self.call_ui(self._show_sysinfo, info, gpu_text)
+
+    def _show_sysinfo(self, info: dict, gpu_text: str) -> None:
+        for key, value in info.items():
+            self.pc_labels[key].configure(text=value)
+        self.gpu_info.configure(text=gpu_text)
+
+    def _show_conn(self, summary: str) -> None:
+        self.conn_label.configure(text=summary, text_color=C["text"])
+
+    def report_callback_exception(self, exc, val, tb) -> None:  # Tk hook
+        import traceback
+        write_log_file("".join(traceback.format_exception(exc, val, tb)))
+        self.log(f"✗ unexpected error: {val}")
