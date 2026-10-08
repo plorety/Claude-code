@@ -18,8 +18,13 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin ^
     --name FPSToolkit --collect-data customtkinter fps_toolkit.py
 if errorlevel 1 goto fail
 
+echo Building Crosshair.exe...
+python -m PyInstaller --noconfirm --onefile --windowed ^
+    --name Crosshair --collect-data customtkinter crosshair_overlay.py
+if errorlevel 1 goto fail
+
 echo.
-echo Done! Your exe is at: %~dp0dist\FPSToolkit.exe
+echo Done! Your exes are in: %~dp0dist  (FPSToolkit.exe and Crosshair.exe)
 explorer "%~dp0dist"
 pause
 exit /b 0

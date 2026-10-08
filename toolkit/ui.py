@@ -8,12 +8,12 @@ import threading
 import tkinter as tk
 from collections import deque
 from datetime import datetime
-from tkinter import colorchooser, messagebox
+from tkinter import messagebox
 
 import customtkinter as ctk
 import psutil
 
-from . import actions, benchmark, crosshair, sysinfo
+from . import actions, benchmark, sysinfo
 from .actions import Action
 from .tweaks import MODE_TWEAK_IDS, MODES, TWEAKS, Mode, Tweak
 from .winutils import IS_WINDOWS, WindowsOnlyError, write_log_file
@@ -33,7 +33,6 @@ IMPACT = {
 PAGES = [
     ("home", "⌂", "Home"),
     ("benchmark", "⏱", "Benchmark"),
-    ("crosshair", "✛", "Crosshair"),
     ("windows", "⊞", "Windows"),
     ("network", "⇅", "Network"),
     ("cleanup", "♻", "Cleanup"),
@@ -259,9 +258,7 @@ class App(ctk.CTk):
         self.after(1000, self._tick_stats)
         threading.Thread(target=self._load_sysinfo, daemon=True).start()
         self.refresh_statuses()
-        self._xh_start_hotkey(quiet=True)
-        if self.xh["show_on_start"] and IS_WINDOWS:
-            self.after(1500, self._xh_toggle)
+
 
     # ------------------------------------------------------------------ layout
 
@@ -365,7 +362,6 @@ class App(ctk.CTk):
     def _build_pages(self) -> None:
         self._build_home()
         self._build_benchmark()
-        self._build_crosshair()
 
         tweaks = {t.id: t for t in TWEAKS}
 
@@ -488,255 +484,6 @@ class App(ctk.CTk):
         self.cpu_graph.grid(row=row, column=0, sticky="nsew", padx=6, pady=6)
         self.ram_graph = UsageGraph(page, "RAM usage")
         self.ram_graph.grid(row=row, column=1, sticky="nsew", padx=6, pady=6)
-
-    def _build_crosshair(self) -> None:
-        page = self._new_page("crosshair")
-        row = self._header(page, "Crosshair", "A custom crosshair drawn on top of your game. It's "
-                                              "just a see-through window: it never touches the "
-                                              "game. Set Fortnite's Display Mode to Windowed "
-                                              "Fullscreen so it shows on top.")
-        self.xh = crosshair.load_settings()
-        self.overlay = crosshair.Overlay(self)
-        self.hotkey_listener = None
-        self._xh_save_job = None
-        self._xh_sliders: dict[str, tuple[ctk.CTkSlider, ctk.CTkLabel]] = {}
-
-        # ---- left: look
-        look = Card(page)
-        look.grid(row=row, column=0, sticky="nsew", padx=6, pady=6)
-        look.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(look, text="Look", font=font(15, "bold"), anchor="w").grid(
-            row=0, column=0, columnspan=3, sticky="ew", padx=16, pady=(14, 8))
-
-        ctk.CTkLabel(look, text="Style", font=font(12), anchor="w").grid(
-            row=1, column=0, sticky="w", padx=(16, 8), pady=4)
-        self.xh_style = ctk.CTkOptionMenu(
-            look, values=crosshair.STYLES, height=30, corner_radius=8, font=font(12),
-            fg_color=C["button2"], button_color=C["button2"],
-            button_hover_color=C["button2_hover"],
-            command=lambda v: self._xh_set("style", v))
-        self.xh_style.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=4)
-
-        ctk.CTkLabel(look, text="Color", font=font(12), anchor="w").grid(
-            row=2, column=0, sticky="w", padx=(16, 8), pady=4)
-        swatches = ctk.CTkFrame(look, fg_color="transparent")
-        swatches.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 16), pady=4)
-        for i, color in enumerate(("#00ff4c", "#00f0ff", "#ffe600", "#ff2a2a", "#ff2bd6", "#ffffff")):
-            ctk.CTkButton(swatches, text="", width=28, height=28, corner_radius=6,
-                          fg_color=color, hover_color=color, border_width=1,
-                          border_color=C["card_border"],
-                          command=lambda c=color: self._xh_set("color", c)).grid(
-                row=0, column=i, padx=(0, 6))
-        ctk.CTkButton(swatches, text="Custom…", width=74, height=28, corner_radius=6,
-                      font=font(12), fg_color=C["button2"], hover_color=C["button2_hover"],
-                      command=self._xh_pick_color).grid(row=0, column=6)
-
-        sliders = [("length", "Length", 0, 40), ("thickness", "Thickness", 1, 10),
-                   ("gap", "Gap", 0, 20), ("dot", "Dot size", 0, 10),
-                   ("radius", "Circle size", 2, 40), ("outline", "Black outline", 0, 4),
-                   ("opacity", "Opacity %", 10, 100), ("offset_x", "Move left/right", -100, 100),
-                   ("offset_y", "Move up/down", -100, 100)]
-        for i, (key, label, lo, hi) in enumerate(sliders, start=3):
-            ctk.CTkLabel(look, text=label, font=font(12), anchor="w").grid(
-                row=i, column=0, sticky="w", padx=(16, 8), pady=3)
-            slider = ctk.CTkSlider(look, from_=lo, to=hi, number_of_steps=hi - lo,
-                                   progress_color=C["accent"], button_color=C["accent"],
-                                   button_hover_color=C["accent_hover"],
-                                   command=lambda v, k=key: self._xh_set(k, int(round(v))))
-            slider.grid(row=i, column=1, sticky="ew", pady=3)
-            value = ctk.CTkLabel(look, text="", width=36, font=font(12, "bold"), anchor="e")
-            value.grid(row=i, column=2, sticky="e", padx=(8, 16), pady=3)
-            self._xh_sliders[key] = (slider, value)
-        ctk.CTkFrame(look, fg_color="transparent", width=1, height=8).grid(
-            row=len(sliders) + 3, column=0)
-
-        # ---- right: preview + controls
-        right = ctk.CTkFrame(page, fg_color="transparent")
-        right.grid(row=row, column=1, sticky="nsew")
-        right.grid_columnconfigure(0, weight=1)
-
-        preview = Card(right)
-        preview.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        preview.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkLabel(preview, text="Preview", font=font(15, "bold"), anchor="w").grid(
-            row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(14, 6))
-        self.xh_preview = tk.Canvas(preview, width=200, height=150, highlightthickness=0, bg="#6f8fb0")
-        self.xh_preview.grid(row=1, column=0, padx=(16, 6))
-        self.xh_zoom = tk.Canvas(preview, width=200, height=150, highlightthickness=0, bg="#6f8fb0")
-        self.xh_zoom.grid(row=1, column=1, padx=(6, 16))
-        for col, text in enumerate(("Actual size", "Zoomed 4×")):
-            ctk.CTkLabel(preview, text=text, font=font(11), text_color=C["muted"]).grid(
-                row=2, column=col, pady=(2, 12))
-
-        ctrl = Card(right)
-        ctrl.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
-        ctrl.grid_columnconfigure(1, weight=1)
-        self.xh_toggle_btn = ctk.CTkButton(ctrl, text="Show crosshair", height=42, corner_radius=10,
-                                           font=font(14, "bold"), fg_color=C["accent"],
-                                           hover_color=C["accent_hover"], command=self._xh_toggle)
-        self.xh_toggle_btn.grid(row=0, column=0, columnspan=3, sticky="ew", padx=16, pady=(16, 10))
-
-        menu_style = dict(height=30, corner_radius=8, font=font(12), fg_color=C["button2"],
-                          button_color=C["button2"], button_hover_color=C["button2_hover"])
-        ctk.CTkLabel(ctrl, text="Hotkey", font=font(12), anchor="w").grid(
-            row=1, column=0, sticky="w", padx=(16, 8), pady=4)
-        self.xh_hotkey = ctk.CTkOptionMenu(ctrl, values=list(crosshair.HOTKEYS), **menu_style,
-                                           command=self._xh_set_hotkey)
-        self.xh_hotkey.set(self.xh["hotkey"])
-        self.xh_hotkey.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=4)
-
-        ctk.CTkLabel(ctrl, text="Monitor", font=font(12), anchor="w").grid(
-            row=2, column=0, sticky="w", padx=(16, 8), pady=4)
-        self._xh_monitor_names = [
-            f"{i + 1}:  {m['width']}×{m['height']}" + ("  (main)" if m["primary"] else "")
-            for i, m in enumerate(crosshair.monitors())]
-        self.xh_monitor = ctk.CTkOptionMenu(
-            ctrl, values=self._xh_monitor_names, **menu_style,
-            command=lambda v: self._xh_set("monitor", self._xh_monitor_names.index(v)))
-        self.xh_monitor.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=4)
-
-        ctk.CTkLabel(ctrl, text="Presets", font=font(12), anchor="w").grid(
-            row=3, column=0, sticky="w", padx=(16, 8), pady=4)
-        self.xh_preset = ctk.CTkOptionMenu(ctrl, values=["—"], **menu_style,
-                                           command=self._xh_load_preset)
-        self.xh_preset.grid(row=3, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=4)
-        buttons = ctk.CTkFrame(ctrl, fg_color="transparent")
-        buttons.grid(row=4, column=1, columnspan=2, sticky="ew", padx=(0, 16), pady=4)
-        buttons.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkButton(buttons, text="Save as preset", height=30, corner_radius=8, font=font(12),
-                      fg_color=C["button2"], hover_color=C["button2_hover"],
-                      command=self._xh_save_preset).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ctk.CTkButton(buttons, text="Delete preset", height=30, corner_radius=8, font=font(12),
-                      fg_color=C["button2"], hover_color=C["button2_hover"],
-                      command=self._xh_delete_preset).grid(row=0, column=1, sticky="ew", padx=(4, 0))
-
-        self.xh_on_start = ctk.CTkCheckBox(ctrl, text="Show the crosshair when the app starts",
-                                           font=font(12), fg_color=C["accent"],
-                                           hover_color=C["accent_hover"],
-                                           command=self._xh_set_on_start)
-        if self.xh["show_on_start"]:
-            self.xh_on_start.select()
-        self.xh_on_start.grid(row=5, column=0, columnspan=3, sticky="w", padx=16, pady=(10, 16))
-
-        self._xh_refresh_presets()
-        self._xh_apply(self.xh["current"])
-
-    # ------------------------------------------------------------------ crosshair
-
-    def _xh_apply(self, cfg: dict) -> None:
-        """Load a whole crosshair config into the controls, preview and overlay."""
-        self.xh["current"] = {**crosshair.DEFAULT, **cfg}
-        cur = self.xh["current"]
-        if cur["monitor"] >= len(self._xh_monitor_names):
-            cur["monitor"] = 0
-        self.xh_style.set(cur["style"])
-        self.xh_monitor.set(self._xh_monitor_names[cur["monitor"]])
-        for key, (slider, value) in self._xh_sliders.items():
-            slider.set(cur[key])
-            value.configure(text=str(cur[key]))
-        self._xh_changed()
-
-    def _xh_set(self, key: str, value) -> None:
-        self.xh["current"][key] = value
-        if key in self._xh_sliders:
-            self._xh_sliders[key][1].configure(text=str(value))
-        self._xh_changed()
-
-    def _xh_changed(self) -> None:
-        cfg = self.xh["current"]
-        for canvas, scale in ((self.xh_preview, 1), (self.xh_zoom, 4)):
-            canvas.delete("all")
-            w, h = int(canvas["width"]), int(canvas["height"])
-            canvas.create_rectangle(0, h * 0.62, w, h, fill="#5d7a3a", outline="")  # "ground"
-            draw_cfg = dict(cfg, offset_x=0, offset_y=0)
-            crosshair.draw(canvas, draw_cfg, w // 2, h // 2, scale)
-        self.overlay.update(cfg)
-        if self._xh_save_job:
-            self.after_cancel(self._xh_save_job)
-        self._xh_save_job = self.after(500, self._xh_save)
-
-    def _xh_save(self) -> None:
-        self._xh_save_job = None
-        try:
-            crosshair.save_settings(self.xh)
-        except OSError as exc:
-            self.log(f"✗ couldn't save crosshair settings: {exc}")
-
-    def _xh_pick_color(self) -> None:
-        picked = colorchooser.askcolor(color=self.xh["current"]["color"], title="Crosshair color")
-        if picked and picked[1]:
-            self._xh_set("color", picked[1])
-
-    def _xh_toggle(self) -> None:
-        if self.overlay.visible:
-            self.overlay.hide()
-            self.xh_toggle_btn.configure(text="Show crosshair", fg_color=C["accent"],
-                                         hover_color=C["accent_hover"])
-            return
-        try:
-            self.overlay.show(self.xh["current"])
-        except WindowsOnlyError:
-            self.log("✗ Crosshair overlay only works on Windows")
-            return
-        self.xh_toggle_btn.configure(text="Hide crosshair", fg_color="#b91c1c",
-                                     hover_color="#991b1b")
-
-    def _xh_start_hotkey(self, quiet: bool = False) -> None:
-        if self.hotkey_listener:
-            self.hotkey_listener.stop()
-            self.hotkey_listener = None
-        combo = self.xh["hotkey"]
-        if combo == "Off" or not IS_WINDOWS:
-            return
-        self.hotkey_listener = crosshair.start_hotkey(combo, lambda: self.call_ui(self._xh_toggle))
-        if self.hotkey_listener and not quiet:
-            self.log(f"Crosshair hotkey: {combo}")
-        elif not self.hotkey_listener:
-            self.log(f"✗ Hotkey {combo} is already used by another program, pick a different one")
-
-    def _xh_set_hotkey(self, combo: str) -> None:
-        self.xh["hotkey"] = combo
-        self._xh_start_hotkey()
-        self._xh_save()
-
-    def _xh_set_on_start(self) -> None:
-        self.xh["show_on_start"] = bool(self.xh_on_start.get())
-        self._xh_save()
-
-    def _xh_refresh_presets(self, selected: str | None = None) -> None:
-        names = list(crosshair.PRESETS) + list(self.xh["profiles"])
-        self.xh_preset.configure(values=names)
-        self.xh_preset.set(selected or "Choose a preset…")
-
-    def _xh_load_preset(self, name: str) -> None:
-        cfg = self.xh["profiles"].get(name) or crosshair.PRESETS.get(name)
-        if cfg:
-            keep = {k: self.xh["current"][k] for k in ("monitor", "offset_x", "offset_y")}
-            self._xh_apply({**cfg, **keep})
-
-    def _xh_save_preset(self) -> None:
-        name = ctk.CTkInputDialog(text="Name for this crosshair:", title="Save preset").get_input()
-        if not name or not name.strip():
-            return
-        name = name.strip()
-        if name in crosshair.PRESETS:
-            messagebox.showinfo("FPS Toolkit", "That name is used by a built-in preset. Pick another.")
-            return
-        self.xh["profiles"][name] = dict(self.xh["current"])
-        self._xh_save()
-        self._xh_refresh_presets(name)
-        self.log(f"Saved crosshair preset '{name}'")
-
-    def _xh_delete_preset(self) -> None:
-        name = self.xh_preset.get()
-        if name not in self.xh["profiles"]:
-            messagebox.showinfo("FPS Toolkit", "Choose one of your own saved presets to delete. "
-                                               "Built-in presets can't be deleted.")
-            return
-        if messagebox.askyesno("FPS Toolkit", f"Delete the preset '{name}'?"):
-            del self.xh["profiles"][name]
-            self._xh_save()
-            self._xh_refresh_presets()
 
     def _build_benchmark(self) -> None:
         page = self._new_page("benchmark")

@@ -1,20 +1,27 @@
-"""Crosshair overlay: a small transparent, click-through, always-on-top window in the middle of
-the screen. It only draws on the desktop, like any other window; it never reads or touches the
-game. Games must run in borderless / "Windowed Fullscreen" mode for overlays to show on top.
+"""Crosshair overlay engine: a small transparent, click-through, always-on-top window in the
+middle of the screen, plus the keyboard listener that switches crosshairs per weapon slot.
+
+It only draws on the desktop, like any other window; it never reads or touches the game. Games
+must run in borderless / "Windowed Fullscreen" mode for overlays to show on top.
 """
 
 from __future__ import annotations
 
 import ctypes
 import json
+import os
 import threading
 import tkinter as tk
+from pathlib import Path
 from typing import Callable
 
-from .winutils import APP_DIR, IS_WINDOWS, require_windows
+from .winutils import IS_WINDOWS, require_windows
 
-SETTINGS_FILE = APP_DIR / "crosshair.json"
+DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "CrosshairOverlay"
+SETTINGS_FILE = DATA_DIR / "settings.json"
+OLD_TOOLKIT_FILE = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "FPSToolkit" / "crosshair.json"
 KEY_COLOR = "#010203"  # painted pixels of this color become see-through
+GAME_EXE = "FortniteClient-Win64-Shipping.exe"
 
 STYLES = ["Cross", "Cross + dot", "Dot", "Circle", "Circle + dot", "T-shape"]
 
@@ -24,20 +31,40 @@ DEFAULT = {
     "offset_x": 0, "offset_y": 0, "monitor": 0,
 }
 
-PRESETS = {
-    "Classic green": DEFAULT,
-    "Small dot": {**DEFAULT, "style": "Dot", "color": "#ff2bd6", "dot": 4},
-    "Cyan cross + dot": {**DEFAULT, "style": "Cross + dot", "color": "#00f0ff", "length": 6,
-                         "gap": 3, "dot": 2},
-    "Circle + dot": {**DEFAULT, "style": "Circle + dot", "color": "#ffe600", "radius": 9,
-                     "thickness": 2, "dot": 2},
-    "T-shape": {**DEFAULT, "style": "T-shape", "color": "#ffffff", "length": 8, "gap": 3},
-    "Big red": {**DEFAULT, "color": "#ff2a2a", "length": 14, "thickness": 3, "gap": 6},
+# Built-in crosshairs. Sizes are in screen pixels; resize them to taste.
+BUILTIN = {
+    "SMG dot": {**DEFAULT, "style": "Dot", "color": "#00f0ff", "dot": 4},
+    "Shotgun circle": {**DEFAULT, "style": "Circle + dot", "color": "#ffe600", "radius": 20,
+                       "thickness": 2, "dot": 3},
+    "Shotgun wide cross": {**DEFAULT, "style": "Cross + dot", "color": "#ff8a00", "length": 9,
+                           "gap": 12, "thickness": 2, "dot": 3},
+    "AR cross": {**DEFAULT, "style": "Cross + dot", "color": "#00ff4c", "length": 6, "gap": 4,
+                 "thickness": 2, "dot": 2},
+    "Sniper dot": {**DEFAULT, "style": "Dot", "color": "#ff2a2a", "dot": 2},
+    "Classic cross": dict(DEFAULT),
 }
+
+NO_CHANGE = "No change"
+HIDE = "Hide crosshair"
+
+# Keys a weapon slot can be bound to. Name -> Windows virtual-key code.
+SLOT_KEYS: dict[str, int | None] = {"—": None}
+SLOT_KEYS.update({str(n): 0x30 + n for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 0)})
+SLOT_KEYS.update({c: ord(c) for c in "QERTFGZXCV"})
+SLOT_KEYS.update({f"F{n}": 0x6F + n for n in range(1, 7)})
+
+DEFAULT_SLOTS = [
+    {"key": "1", "crosshair": "SMG dot"},
+    {"key": "2", "crosshair": "Shotgun circle"},
+    {"key": "3", "crosshair": "AR cross"},
+    {"key": "4", "crosshair": NO_CHANGE},
+    {"key": "5", "crosshair": NO_CHANGE},
+    {"key": "—", "crosshair": NO_CHANGE},
+]
 
 HOTKEYS: dict[str, tuple[int, int] | None] = {
     "Ctrl+Shift+X": (0x0002 | 0x0004, ord("X")),
-    "F6": (0, 0x75), "F7": (0, 0x76), "F8": (0, 0x77), "F9": (0, 0x78),
+    "F7": (0, 0x76), "F8": (0, 0x77), "F9": (0, 0x78),
     "F10": (0, 0x79), "F11": (0, 0x7A),
     "Insert": (0, 0x2D), "Home": (0, 0x24),
     "Off": None,
@@ -47,22 +74,48 @@ HOTKEYS: dict[str, tuple[int, int] | None] = {
 # --------------------------------------------------------------------------- settings
 
 def load_settings() -> dict:
-    data = {"current": dict(DEFAULT), "profiles": {}, "hotkey": "Ctrl+Shift+X",
-            "show_on_start": False}
+    data = {
+        "crosshairs": {name: dict(cfg) for name, cfg in BUILTIN.items()},
+        "slots": [dict(slot) for slot in DEFAULT_SLOTS],
+        "active": "SMG dot",
+        "hotkey": "Ctrl+Shift+X",
+        "monitor": 0,
+        "show_on_start": False,
+        "fortnite_only": True,
+    }
     try:
         saved = json.loads(SETTINGS_FILE.read_text("utf-8"))
         data.update({k: v for k, v in saved.items() if k in data})
-        data["current"] = {**DEFAULT, **data["current"]}
     except (OSError, ValueError):
-        pass
+        # First run: bring over crosshairs saved in the FPS Toolkit's old Crosshair page.
+        try:
+            old = json.loads(OLD_TOOLKIT_FILE.read_text("utf-8"))
+            for name, cfg in old.get("profiles", {}).items():
+                data["crosshairs"].setdefault(name, cfg)
+        except (OSError, ValueError, AttributeError):
+            pass
+    data["crosshairs"] = {name: {**DEFAULT, **cfg} for name, cfg in data["crosshairs"].items()}
+    if not data["crosshairs"]:
+        data["crosshairs"] = {name: dict(cfg) for name, cfg in BUILTIN.items()}
+    valid = set(data["crosshairs"]) | {NO_CHANGE, HIDE}
+    data["slots"] = (data["slots"] + [dict(s) for s in DEFAULT_SLOTS])[:len(DEFAULT_SLOTS)]
+    for slot in data["slots"]:
+        if slot.get("key") not in SLOT_KEYS:
+            slot["key"] = "—"
+        if slot.get("crosshair") not in valid:
+            slot["crosshair"] = NO_CHANGE
+    if data["active"] not in data["crosshairs"]:
+        data["active"] = next(iter(data["crosshairs"]))
     if data["hotkey"] not in HOTKEYS:
         data["hotkey"] = "Ctrl+Shift+X"
     return data
 
 
 def save_settings(data: dict) -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2), "utf-8")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), "utf-8")
+    tmp.replace(SETTINGS_FILE)
 
 
 # --------------------------------------------------------------------------- drawing
@@ -254,3 +307,107 @@ def start_hotkey(combo: str, callback: Callable[[], None]) -> HotkeyListener | N
     listener.start()
     listener.ready.wait(2)
     return listener if listener.ok else None
+
+
+# --------------------------------------------------------------------------- weapon-slot keys
+
+class KeyListener(threading.Thread):
+    """Watches the keyboard for weapon-slot keys with a low-level hook.
+
+    It only looks: every key press is passed on to the game unchanged, and nothing is ever
+    pressed for you. The mouse is deliberately not hooked, so aiming input is never delayed.
+    `callback(vk)` runs on this thread once per key press (held keys don't repeat).
+    """
+
+    WH_KEYBOARD_LL, WM_QUIT = 13, 0x0012
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
+
+    def __init__(self, callback: Callable[[int], None]) -> None:
+        super().__init__(daemon=True)
+        self.callback = callback
+        self.watched: frozenset[int] = frozenset()
+        self.thread_id = 0
+        self.ok = False
+        self.ready = threading.Event()
+        self._down: set[int] = set()
+
+    def run(self) -> None:
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        LRESULT = ctypes.c_ssize_t
+        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+        class KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
+                        ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_size_t)]
+
+        user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD)
+        user32.SetWindowsHookExW.restype = wintypes.HHOOK
+        user32.CallNextHookEx.argtypes = (wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        user32.CallNextHookEx.restype = LRESULT
+        user32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+
+        def on_key(n_code, w_param, l_param):
+            if n_code == 0:
+                vk = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents.vkCode
+                if vk in self.watched:
+                    if w_param in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
+                        if vk not in self._down:
+                            self._down.add(vk)
+                            try:
+                                self.callback(vk)
+                            except Exception:  # noqa: BLE001 - never let a bug block the keyboard
+                                pass
+                    elif w_param in (self.WM_KEYUP, self.WM_SYSKEYUP):
+                        self._down.discard(vk)
+            return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+        self._proc = HOOKPROC(on_key)  # keep a reference so it isn't garbage-collected
+        self.thread_id = kernel32.GetCurrentThreadId()
+        hook = user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._proc,
+                                        kernel32.GetModuleHandleW(None), 0)
+        self.ok = bool(hook)
+        self.ready.set()
+        if not hook:
+            return
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            pass
+        user32.UnhookWindowsHookEx(hook)
+
+    def stop(self) -> None:
+        if self.thread_id:
+            ctypes.windll.user32.PostThreadMessageW(self.thread_id, self.WM_QUIT, 0, 0)
+
+
+def start_key_listener(callback: Callable[[int], None]) -> KeyListener | None:
+    if not IS_WINDOWS:
+        return None
+    listener = KeyListener(callback)
+    listener.start()
+    listener.ready.wait(2)
+    return listener if listener.ok else None
+
+
+_process_names: dict[int, str] = {}
+
+
+def foreground_process_name() -> str:
+    """Name of the program whose window is in front, e.g. FortniteClient-Win64-Shipping.exe."""
+    if not IS_WINDOWS:
+        return ""
+    from ctypes import wintypes
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    pid = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value not in _process_names:
+        try:
+            import psutil
+            _process_names[pid.value] = psutil.Process(pid.value).name()
+        except Exception:  # noqa: BLE001 - process gone or access denied
+            return ""
+    return _process_names[pid.value]

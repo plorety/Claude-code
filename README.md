@@ -18,7 +18,7 @@ Or from a terminal: `pip install -r requirements.txt` then `python fps_toolkit.p
 
 - **Download:** every push is built on GitHub's Windows machines. Open the repo's
   **Actions** tab → latest **Build Windows exe** run → download the **FPSToolkit** artifact (a zip
-  containing `FPSToolkit.exe`).
+  containing `FPSToolkit.exe`) and/or the **Crosshair** artifact (`Crosshair.exe`).
 - **Build it yourself:** double-click **`build.bat`**. The exe ends up in `dist\FPSToolkit.exe`.
 
 The exe is a single file with Python built in, so it runs without installing anything. It asks for
@@ -59,20 +59,29 @@ Every run repeats its measurements and records how much they vary. A difference 
 **better** or **worse** when it's bigger than that variation; otherwise it shows **≈ same**. Results
 are saved in `%LOCALAPPDATA%\FPSToolkit\benchmarks.json`.
 
-## Crosshair overlay
+## Crosshair (separate app)
 
-The **Crosshair** page draws your own crosshair on top of the game, like Crosshair X:
+**Crosshair.exe** is its own small app: a free crosshair overlay like Crosshair X. It doesn't
+need administrator rights.
 
-- Styles: cross, cross + dot, dot, circle, circle + dot, T-shape.
-- Any color, plus length, thickness, gap, dot size, circle size, black outline, opacity and
-  position offset, with a live preview at actual size and zoomed 4×.
-- Built-in presets, and you can save your own.
-- A global hotkey to show/hide it in game (default **Ctrl+Shift+X**), monitor choice, and an option
-  to show it when the app starts.
+- **Built-in crosshairs:** SMG dot, Shotgun circle, Shotgun wide cross, AR cross, Sniper dot and
+  Classic cross. Edit any of them, or make your own (style, color, length, thickness, gap, dot,
+  circle size, outline, opacity, position) with live previews.
+- **Weapon slots:** bind keys to crosshairs. By default **1 → SMG dot**, **2 → Shotgun circle**
+  and **3 → AR cross**. Press the key in game and the crosshair switches. Bind building or
+  pickaxe keys (for example F1–F5) to **Hide crosshair**; pressing a weapon key brings it back.
+  Use the same keys as your Fortnite binds.
+- The key presses are only watched with a keyboard listener. They still reach Fortnite as
+  normal, and nothing is pressed or blocked. The mouse isn't hooked, so aim input is never
+  delayed (which also means scroll-wheel weapon switching can't be followed).
+- By default it only reacts while Fortnite is the active window, so typing "1" in Discord
+  doesn't change it.
+- **Ctrl+Shift+X** shows/hides it (changeable), plus monitor choice and show-on-start.
 
-It's a see-through, click-through, always-on-top window. It never reads or touches the game.
-Fortnite must be in **Windowed Fullscreen** (Settings → Display Mode) for it to show on top;
-in exclusive Fullscreen, Windows draws the game over everything.
+The overlay is a see-through, click-through, always-on-top window that never reads or touches the
+game. Fortnite must be in **Windowed Fullscreen** for it to show. Settings are saved in
+`%LOCALAPPDATA%\CrosshairOverlay\settings.json`. Run it from source with
+`python crosshair_overlay.py`.
 
 ## What's inside
 
@@ -80,7 +89,6 @@ in exclusive Fullscreen, Windows draws the game over everything.
 | --- | --- |
 | Home | Your PC specs, the three modes, live CPU/RAM graphs, connection test |
 | Benchmark | System test and in-game FPS test, saved runs, before/after comparison |
-| Crosshair | Custom crosshair overlay with presets, hotkey and monitor choice |
 | Windows | Ultimate Performance power plan, Game Mode, turn off background game recording, mouse acceleration off, GPU hardware scheduling, Game Bar overlay off, Store apps in the background, Fortnite CPU priority, refresh-rate check |
 | Network | Ping / jitter / packet-loss test, Wi-Fi vs Ethernet check, DNS flush, network reset |
 | Cleanup | Temp files, Recycle Bin, startup apps, uninstall apps, Disk Cleanup, DISM + SFC repair |
