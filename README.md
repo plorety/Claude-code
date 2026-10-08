@@ -59,12 +59,28 @@ Every run repeats its measurements and records how much they vary. A difference 
 **better** or **worse** when it's bigger than that variation; otherwise it shows **≈ same**. Results
 are saved in `%LOCALAPPDATA%\FPSToolkit\benchmarks.json`.
 
+## Crosshair overlay
+
+The **Crosshair** page draws your own crosshair on top of the game, like Crosshair X:
+
+- Styles: cross, cross + dot, dot, circle, circle + dot, T-shape.
+- Any color, plus length, thickness, gap, dot size, circle size, black outline, opacity and
+  position offset, with a live preview at actual size and zoomed 4×.
+- Built-in presets, and you can save your own.
+- A global hotkey to show/hide it in game (default **Ctrl+Shift+X**), monitor choice, and an option
+  to show it when the app starts.
+
+It's a see-through, click-through, always-on-top window. It never reads or touches the game.
+Fortnite must be in **Windowed Fullscreen** (Settings → Display Mode) for it to show on top;
+in exclusive Fullscreen, Windows draws the game over everything.
+
 ## What's inside
 
 | Page | What it does |
 | --- | --- |
 | Home | Your PC specs, the three modes, live CPU/RAM graphs, connection test |
 | Benchmark | System test and in-game FPS test, saved runs, before/after comparison |
+| Crosshair | Custom crosshair overlay with presets, hotkey and monitor choice |
 | Windows | Ultimate Performance power plan, Game Mode, turn off background game recording, mouse acceleration off, GPU hardware scheduling, Game Bar overlay off, Store apps in the background, Fortnite CPU priority, refresh-rate check |
 | Network | Ping / jitter / packet-loss test, Wi-Fi vs Ethernet check, DNS flush, network reset |
 | Cleanup | Temp files, Recycle Bin, startup apps, uninstall apps, Disk Cleanup, DISM + SFC repair |
